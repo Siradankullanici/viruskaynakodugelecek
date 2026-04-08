@@ -1,0 +1,2 @@
+# viruskaynakodugelecek
+bekleyin
