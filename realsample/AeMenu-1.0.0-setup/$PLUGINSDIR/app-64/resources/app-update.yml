@@ -1,0 +1,4 @@
+owner: YOUR_USERNAME
+repo: silent-panel-backend
+provider: github
+updaterCacheDirName: aemenu-updater
