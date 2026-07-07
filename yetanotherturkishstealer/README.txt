@@ -8,4 +8,4 @@ c2: https://www.virustotal.com/gui/ip-address/141.98.48.2/relations
 
 
 AHRAZv3.exe
-https://www.virustotal.com/gui/ip-address/188.240.81.35/relations
+c2: https://www.virustotal.com/gui/ip-address/188.240.81.35/relations
