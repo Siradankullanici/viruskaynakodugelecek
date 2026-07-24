@@ -1,0 +1,14 @@
+AssemblyInfo	https://riofrasax.cfd
+AssistantSerializer	https://kefaisce.cfd
+Component	https://fleewakig.lol
+EditorService	https://foceafluary.shop
+FileEditor	https://noabasteb.lol
+FileSerializer	https://wuscokosh.cfd
+IconScope	https://wuserrosok.cfd
+MemoryTable	https://puswaindatio.shop
+MethodResolver	https://violcuglu.cfd
+NetworkProvider	https://stuljogap.cfd
+TemplateStack	https://spasoovict.shop
+TextFileEventArgs	https://feafetoboary.lol
+TextFileScope	https://prunarok.lol
+XmlFileLoader	https://zarwieciv.cfd
