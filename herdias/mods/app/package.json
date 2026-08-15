@@ -1,0 +1,9 @@
+{
+  "name": "zentra",
+  "version": "2.5.0",
+  "description": "Zentra",
+  "main": "main.js",
+  "author": "Zentra Soft",
+  "copyright": "Copyright © 2026 Zentra Soft",
+  "license": "MIT"
+}

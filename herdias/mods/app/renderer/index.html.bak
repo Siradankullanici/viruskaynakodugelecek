@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zentra</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Titlebar -->
+    <div class="titlebar" id="titlebar">
+        <span class="titlebar-name"></span>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+        <div class="hero-particles" id="particles"></div>
+
+        <div class="center-block">
+            <h1 class="logo">Loading...</h1>
+            <p class="tagline"></p>
+        </div>
+
+        <div class="bottom-bar">
+            <div class="status-row">
+                <div class="spinner-wrap" id="status-icon"><div class="spinner"></div></div>
+                <span class="status-text" id="status-label">Preparing...</span>
+            </div>
+            <div class="progress-row">
+                <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+                <span class="progress-pct" id="progress-percent">0%</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('titlebar').style.webkitAppRegion = 'drag';
+
+        const statusLabel = document.getElementById('status-label');
+        const statusIcon = document.getElementById('status-icon');
+        const progressFill = document.getElementById('progress-fill');
+        const progressPercent = document.getElementById('progress-percent');
+
+        const stages = {
+            checking:  'Checking game files...',
+            assets:    'Downloading assets...',
+            textures:  'Loading textures...',
+            mods:      'Loading mods...',
+            config:    'Applying config...',
+            decode:    'Verifying modules...',
+            write:     'Writing cache...',
+            launch:    'Starting services...',
+            libraries: 'Loading libraries...',
+            launching: 'Launching game...',
+            complete:  'Ready!',
+            error:     'Connection error',
+        };
+
+        window.launcher.onProgress((data) => {
+            statusLabel.textContent = data.message || stages[data.stage] || data.stage;
+            const pct = Math.min(100, Math.max(0, data.percent));
+            progressFill.style.width = pct + '%';
+            progressPercent.textContent = pct + '%';
+
+            if (data.stage === 'complete') {
+                statusIcon.innerHTML = '<span class="check">✓</span>';
+                statusIcon.classList.add('done');
+            } else if (data.stage === 'error') {
+                statusIcon.innerHTML = '<span class="err">✕</span>';
+                statusIcon.classList.add('error');
+                progressFill.classList.add('error');
+            }
+        });
+
+        // Particles
+        const pc = document.getElementById('particles');
+        function mkP() {
+            const p = document.createElement('div');
+            p.className = 'particle';
+            p.style.left = Math.random() * 100 + '%';
+            p.style.animationDuration = (4 + Math.random() * 5) + 's';
+            p.style.width = p.style.height = (2 + Math.random() * 3) + 'px';
+            pc.appendChild(p);
+            setTimeout(() => p.remove(), 9000);
+        }
+        setInterval(mkP, 500);
+    </script>
+</body>
+</html>
