@@ -1,0 +1,1 @@
+module.exports = ".scratch-render-overlays {\n    position: absolute;\n    top: 0;\n    left: 0;\n    pointer-events: none;\n    overflow: hidden;\n}\n.scratch-render-overlays > * {\n    position: absolute;\n    top: 0;\n    left: 0;\n}\n";
