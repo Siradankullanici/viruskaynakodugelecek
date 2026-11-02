@@ -1,0 +1,223 @@
+C:\Users\semae\Downloads\zdxzxcsdasdsdafsda\resources\app ve kök dizindeki yürütülebilir dosya) tersine mühendislikle çözülmüş ve tehdit tüm katmanlarıyla deşifre edilmiştir.
+
+Bu yapı, kurbanı yanıltmak için bir Scratch / TurboWarp jumpscare (korkutma) oyunu süsü verilmiş, arka planda ise tüm tarayıcılardan ve istemcilerden Discord oturum ve kimlik bilgilerini çalan "DemonZ Token Grabber" adlı bir Infostealer (Bilgi Hırsızı) yazılımıdır.
+
+1. Tehdit Özeti ve Kimlik
+Özellik	Detay
+Zararlı Türü	Infostealer / Discord Token Grabber / DPAPI Credential Stealer
+Zararlı Adı / İmzası	DemonZ Token Grabber (Professional Edition)
+Yazılım Dili / Derleyici	Python 3.13 (64-bit) — PyInstaller 6.x paketi
+Kamufle Yöntemi	TurboWarp (Electron tabanlı sahte Scratch oyunu)
+Hedef Platform	Windows (Tüm Chromium tabanlı tarayıcılar, Firefox ve Discord istemcileri)
+Sızıntı (Exfiltration) Kanalı	Discord PTB Webhook
+2. Kamufle ve Dağıtım Mimarisi
+
+Saldırgan hedef klasörü iki katmanlı bir aldatmaca (decoy) ile hazırlamıştır:
+
+
+  
+
+  
+
+Ön Plan / Yem Katmanı (resources\app):
+
+
+  
+
+  
+Klasördeki electron-main.js, index.html ve assets/project.json, popüler Scratch dağıtımcısı TurboWarp Packager ile üretilmiştir.
+
+  
+assets/project.json incelendiğinde 6 farklı sprite (Objeto1 - Objeto6) ve x0ranixface adlı korkunç yüz görselleri ile color onr (korna/çığlık sesi) içeren bir jumpscare/prank oyunu olduğu görülür.
+
+  
+Proje başlatıldığında 300 adet klon oluşturup ekrana rastgele koordinatlarda çığlık atan yüzler basarak sistemi dondurmakta ve kullanıcının dikkatini dağıtmaktadır.
+
+  
+Klasördeki korna.js ve korna.js.7z dosyaları, oyun motorunun script.js (TurboWarp Scaffolding) dosyasına ait webcrack ayrıştırmalarıdır.
+
+  
+
+  
+
+  
+
+  
+
+Gerçek Zararlı Taşıyıcı (fivenightsatlemos.exe):
+
+
+  
+
+  
+Kök dizindeki README.txt kullanıcıya zdxzxcsdasdsdafsda.exe dosyasını açmasını söylerken, dosya fivenightsatlemos.exe adıyla yer almaktadır.
+
+  
+Bu dosya bir Electron binary'si değildir. PE başlığı incelendiğinde 0x61A00 ofsetinde 12.85 MB boyutunda bir PyInstaller CArchive yerleştirildiği tespit edilmiştir.
+
+  
+Bu paket açıldığında ana zararlı betiği olan DemonZ ve ona bağlı config.json doğrudan elde edilmiştir.
+
+  
+
+  
+
+  
+3. Zararlının İç Yapısı ve Çalışma Mekanizması
+
+Çıkarılan DemonZ Python 3.13 bytecode modülü ve config.json analiz edildiğinde şu akış tespit edilmiştir:
+
+A. Konfigürasyon Dosyası (config.json)
+json
+{
+    "webhook_urls": [
+        "https://ptb.discord.com/api/webhooks/1566784978459562008/Ob_p2ylMPLt3c-uoF2ZPI-c9xphSSQ8jOpFGZe8cwTjVBKmHlIAxIFa9xgvECHmIqhB8"
+    ],
+    "avatar_url": "https://imgur.com/pH5dvoC",
+    "embed_color": 1752220,
+    "timeout": 10,
+    "silent_mode": false,
+    "dry_run": false,
+    "save_to_file": true,
+    "backup_file": "tokens_backup.txt",
+    "max_threads": 20,
+    "random_delays": true,
+    "min_delay": 0.01,
+    "max_delay": 0.05,
+    "webhook_retry_count": 3,
+    "webhook_retry_delay": 2.0,
+    "exe_icon": "https://imgur.com/pH5dvoC"
+}
+B. Şifre Çözme ve Token Çalma Akışı
+
+  
+Windows DPAPI ve Anahtar Çıkarımı:
+  
+  
+
+  
+%LOCALAPPDATA% altındaki tarayıcıların User Data\Local State dosyalarını okur.
+
+  
+os_crypt.encrypted_key alanını çeker, başındaki DPAPI etiketini atıp Windows win32crypt.CryptUnprotectData API'si ile şifresini çözer (Master Key).
+
+  
+
+  
+LevelDB & SQLite Taraması:
+  
+  
+
+  
+Chromium tabanlı tarayıcıların ve Discord istemcilerinin Local Storage\leveldb dizinlerindeki .ldb ve .log dosyalarını tarar.
+
+  
+dQw4w9WgXcQ: ön ekiyle başlayan şifreli token bloklarını bulur.
+
+  
+Çözülen Master Key ile AES-GCM algoritmasını kullanarak Discord oturum token'ını düz metne dönüştürür.
+
+  
+Network\Cookies veritabanına bağlanıp şu SQL sorgusunu çalıştırır:
+  
+sql
+SELECT encrypted_value FROM cookies WHERE host_key LIKE '%discord%' AND name = 'token'
+
+  
+
+  
+
+  
+Kurban Profili Çıkarma & Doğrulama:
+  
+  
+
+  
+Kurbanın dış IP adresini https://api.ipify.org?format=json üzerinden alır.
+
+  
+Ele geçirilen token'ı Discord API'sine (https://discord.com/api/v9/users/@me) Authorization: <token> başlığıyla göndererek doğrular.
+
+  
+Kurbanın Discord Kullanıcı Adı, ID'si, E-posta adresi, Telefon numarası ve Rozetlerini (Nitro, HypeSquad vb.) toplar.
+
+  
+
+  
+Sızıntı (Exfiltration):
+  
+  
+
+  
+Verileri zenginleştirilmiş Discord Embed mesajı formatında saldırganın Webhook adresine postalar.
+
+  
+Webhook başarısız olursa kurbanın diski üzerinde tokens_backup.txt dosyasına yazar.
+
+  
+
+  
+4. Hedeflenen Uygulama ve Dizinler
+Uygulama / Tarayıcı	Hedeflenen Dizin
+Discord Resmi İstemcileri	%APPDATA%\discord, %APPDATA%\discordcanary, %APPDATA%\discordptb
+Özel Discord İstemcileri	%APPDATA%\Lightcord
+Google Chrome / SxS	%LOCALAPPDATA%\Google\Chrome\User Data, %LOCALAPPDATA%\Google\Chrome SxS\User Data
+Microsoft Edge	%LOCALAPPDATA%\Microsoft\Edge\User Data
+Brave Browser	%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data
+Opera & Opera GX	%APPDATA%\Opera Software\Opera Stable, %APPDATA%\Opera Software\Opera GX Stable
+Vivaldi & Yandex	%LOCALAPPDATA%\Vivaldi\User Data, %LOCALAPPDATA%\Yandex\YandexBrowser\User Data
+Diğer Chromium Türevleri	CentBrowser, Amigo, Torch, Kometa, Orbitum, 7Star, Sputnik, Epic Browser, Uran, Iridium
+Mozilla Firefox	%APPDATA%\Mozilla\Firefox\Profiles (.sqlite veritabanları)
+5. Tespit Edilen Göstergeler (IoC Listesi)
+
+  
+C2 / Exfiltration Webhook:
+https://ptb.discord.com/api/webhooks/1566784978459562008/Ob_p2ylMPLt3c-uoF2ZPI-c9xphSSQ8jOpFGZe8cwTjVBKmHlIAxIFa9xgvECHmIqhB8
+
+  
+Saldırgan Profil Resmi / İkon:
+https://imgur.com/pH5dvoC
+
+  
+IP Sorgu Servisi:
+https://api.ipify.org?format=json
+
+  
+Dosya Bilgileri:
+  
+  
+
+  
+fivenightsatlemos.exe (13,255,545 bayt)
+  
+  
+
+  
+MD5: 8696a21f3e6feb17954b5eb3db051155
+
+  
+SHA-256: c48fa31742cb47c5074b4bad0d63a31ab75b26ee22ac83250e179053647ba68d
+
+  
+
+  
+Yerel Yedek Dosyası: tokens_backup.txt
+
+  
+
+  
+6. Acil Müdahale ve Temizlik Tavsiyeleri
+
+Eğer bu dosya (fivenightsatlemos.exe veya paketi) test ortamı dışında herhangi bir gerçek bilgisayarda çalıştırıldıysa:
+
+
+  
+Discord Şifresini Değiştirin: Discord şifrenizi değiştirmek mevcut tüm aktif token'ları anında geçersiz kılar. İki aşamalı doğrulamayı (2FA) etkinleştirin ve "Tüm Cihazlardan Çıkış Yap" seçeneğini kullanın.
+
+  
+Discord Webhook'unu Raporlayın/Kapatın: Webhook URL'i (.../api/webhooks/1566784978459562008/...) Discord Güvenlik Ekibine bildirilerek kanalın kapatılması sağlanmalıdır.
+
+  
+Dosya Kalıntılarını Silin: İndirilen zdxzxcsdasdsdafsda dizinini ve varsa oluşmuş tokens_backup.txt dosyasını tamamen silin. Tarayıcı oturum çerezlerinizi temizleyin.
+
+  
