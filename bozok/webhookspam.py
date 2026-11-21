@@ -3,8 +3,9 @@ import urllib.request
 import urllib.error
 
 # Hedef Webhook URL'si
-WEBHOOK_URL = "https://ptb.discord.com/api/webhooks/1566784978459562008/Ob_p2ylMPLt3c-uoF2ZPI-c9xphSSQ8jOpFGZe8cwTjVBKmHlIAxIFa9xgvECHmIqhB8"
+# WEBHOOK_URL = "https://ptb.discord.com/api/webhooks/1566784978459562008/Ob_p2ylMPLt3c-uoF2ZPI-c9xphSSQ8jOpFGZe8cwTjVBKmHlIAxIFa9xgvECHmIqhB8"
 
+WEBHOOK_URL = "https://ptb.discord.com/api/webhooks/1569780307647926352/60eOa5FUgVSz5Fr5XVyu0snXaJUfsCbnl6MY7q4R2YDxtiq6ztZeIIwfWtGnfRM0ll0e"
 
 def get_webhook_info(url: str):
     """Webhook'un aktif olup olmadığını ve kanal bilgilerini kontrol eder."""
@@ -89,7 +90,7 @@ if __name__ == "__main__":
             print("\n--- 2. Bilgilendirme / Uyarı Mesajı Gönderiliyor ---")
             send_message(
                 WEBHOOK_URL,
-                "no virus",
+                "no virus hydra_dragon_antivirus spam babapro edition",
                 username="Malware Remediation Bot"
             )
 
