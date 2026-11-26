@@ -1,0 +1,24 @@
+[package]
+name = "iommu_hook"
+version = "0.1.0"
+edition = "2021"
+
+# cdylib -> iommu_hook.dll  (the hook, injected into the target)
+[lib]
+name = "iommu_hook"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+# the launcher exe: starts the target suspended with explorer.exe as parent, injects the DLL, resumes
+[[bin]]
+name = "launch_iommu"
+path = "src/main.rs"
+
+# the watcher injector: sits in background waiting for user to double click the target
+[[bin]]
+name = "wait_and_inject"
+path = "src/wait_and_inject.rs"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
