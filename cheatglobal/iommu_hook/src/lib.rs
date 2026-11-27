@@ -562,9 +562,79 @@ unsafe extern "system" fn veh_handler(info: *mut ExceptionPointers) -> i32 {
     if !info.is_null() && !(*info).record.is_null() {
         let rec = &*(*info).record;
         let code = rec.code;
+
+        // PAGE_GUARD on the typed-input copy tripped: the VM is reading our input to
+        // compare it to the embedded password. Dump the registers + the memory each points
+        // at when the reader is VM code (private executable), then single-step and re-arm so
+        // the whole byte-by-byte compare is traced. The password appears in one of the dumps.
+        if code == 0x8000_0001 {
+            let gpb = GUARD_PAGE_BASE.load(Ordering::Acquire);
+            let nparams = core::ptr::read_unaligned(core::ptr::from_ref(rec).add(0x18) as *const u32);
+            let fault = if nparams >= 2 {
+                core::ptr::read_unaligned(core::ptr::from_ref(rec).add(0x28) as *const usize)
+            } else { 0 };
+            if gpb != 0 && fault >= gpb && fault < gpb + 0x1000 {
+                // ONE-SHOT: dump everything at the first access and disarm. No trap flag /
+                // single-step (the crackme's own VEH would flag it as a debugger → Code 70),
+                // no re-arm storm on this hot heap page.
+                GUARD_PAGE_BASE.store(0, Ordering::Release);
+                let ctx = (*info)._context as *const u8;
+                if !ctx.is_null() {
+                    let rd = |off: usize| -> u64 { core::ptr::read_unaligned(ctx.add(off) as *const u64) };
+                    let rip = rd(0xF8);
+                    log_msg(&format!("[guard] HIT rip={:#x} fault={:#x} rax={:#x} rcx={:#x} rdx={:#x} rbx={:#x} rbp={:#x} rsi={:#x} rdi={:#x} r8={:#x} r9={:#x} r10={:#x} r11={:#x} r12={:#x} r13={:#x} r14={:#x} r15={:#x}",
+                        rip, fault, rd(0x78), rd(0x80), rd(0x88), rd(0x90), rd(0xA0), rd(0xA8), rd(0xB0),
+                        rd(0xB8), rd(0xC0), rd(0xC8), rd(0xD0), rd(0xD8), rd(0xE0), rd(0xE8), rd(0xF0)));
+                    // dump code around rip and memory pointed by every GP register
+                    let mut code = String::new();
+                    let mut cb = [0u8; 32];
+                    let mut cg = 0usize;
+                    if ReadProcessMemory(GetCurrentProcess(), rip.wrapping_sub(8) as *const c_void,
+                        cb.as_mut_ptr() as *mut c_void, 32, &mut cg) != 0 && cg > 0 {
+                        for &b in &cb[..cg] { code.push_str(&format!("{:02X} ", b)); }
+                        log_msg(&format!("[guard]   code@rip-8: {}", code));
+                    }
+                    for (name, v) in [("rax", rd(0x78)), ("rcx", rd(0x80)), ("rdx", rd(0x88)), ("rbx", rd(0x90)),
+                        ("rbp", rd(0xA0)), ("rsi", rd(0xA8)), ("rdi", rd(0xB0)), ("r8", rd(0xB8)), ("r9", rd(0xC0)),
+                        ("r10", rd(0xC8)), ("r11", rd(0xD0)), ("r12", rd(0xD8)), ("r13", rd(0xE0)), ("r14", rd(0xE8)), ("r15", rd(0xF0))] {
+                        if v > 0x10000 && v < 0x7FFE_FFFF_FFFF {
+                            let mut q = [0u8; 56];
+                            if VirtualQuery(v as *const c_void, q.as_mut_ptr(), 56) != 0
+                                && u32::from_ne_bytes(q[32..36].try_into().unwrap()) == 0x1000 {
+                                let mut b = [0u8; 64];
+                                let mut got = 0usize;
+                                if ReadProcessMemory(GetCurrentProcess(), v as *const c_void,
+                                    b.as_mut_ptr() as *mut c_void, 64, &mut got) != 0 && got > 0 {
+                                    let asc: String = b[..got].iter().map(|&c| if (0x20..0x7f).contains(&c) { c as char } else { '.' }).collect();
+                                    let hx: String = b[..got].iter().map(|&c| format!("{:02X}", c)).collect();
+                                    log_msg(&format!("[guard]   {}={:#x} -> {} | {}", name, v, asc, hx));
+                                }
+                            }
+                        }
+                    }
+                }
+                let _ = GUARD_HITS.fetch_add(1, Ordering::SeqCst);
+                return -1; // EXCEPTION_CONTINUE_EXECUTION (PAGE_GUARD already auto-cleared)
+            }
+        }
+
         // Hardware watchpoint hit (single-step from DR0 match): log the reader,
         // disarm DR7 in the context, and resume.
         if code == 0x8000_0004 {
+            // Our own TF single-step after a guard hit: clear TF, re-arm the guard page.
+            if GUARD_REARM.swap(false, Ordering::SeqCst) {
+                let ctxm = (*info)._context as *mut u8;
+                if !ctxm.is_null() {
+                    let ef = core::ptr::read_unaligned(ctxm.add(0x44) as *const u32);
+                    core::ptr::write_unaligned(ctxm.add(0x44) as *mut u32, ef & !0x100u32);
+                }
+                let gpb = GUARD_PAGE_BASE.load(Ordering::Acquire);
+                if gpb != 0 && GUARD_HITS.load(Ordering::Acquire) < 600 {
+                    let mut old = 0u32;
+                    let _ = VirtualProtect(gpb as *mut c_void, 0x1000, 0x04 | 0x100, &mut old);
+                }
+                return -1;
+            }
             let ctx = (*info)._context as *const u8;
             if !ctx.is_null() {
                 let dr6 = core::ptr::read_unaligned(ctx.add(0x68) as *const u64);
@@ -665,8 +735,9 @@ unsafe extern "system" fn veh_handler(info: *mut ExceptionPointers) -> i32 {
                 ("ntdll.dll", GetModuleHandleA(b"ntdll.dll\0".as_ptr())),
                 ("advapi32.dll", GetModuleHandleA(b"advapi32.dll\0".as_ptr())),
                 ("iommu_hook.dll", GetModuleHandleA(b"iommu_hook.dll\0".as_ptr())),
-                ("TestCrackMe.exe", GetModuleHandleA(b"TestCrackMe.exe\0".as_ptr())),
-                ("TestCrackMe", GetModuleHandleA(b"TestCrackMe\0".as_ptr())),
+                // Main module = the target exe itself, whatever its name
+                // (CrackMe (2).exe, crackme2.code75fix.exe, TestCrackMe.exe, ...).
+                ("target.exe", GetModuleHandleA(core::ptr::null())),
                 ("kernel32.dll", GetModuleHandleA(b"kernel32.dll\0".as_ptr())),
                 ("user32.dll", GetModuleHandleA(b"user32.dll\0".as_ptr())),
             ] {
@@ -2249,6 +2320,24 @@ unsafe fn is_typed_buffer(p: *const u8, n: usize) -> bool {
 
 unsafe extern "system" fn hook_memcmp(a: *const c_void, b: *const c_void, n: usize) -> i32 {
     let _active = HookCallGuard::enter();
+    // The password is compared inside the VM (no hooked compare), so we cannot see it
+    // directly. Once Enter is seen, the VM decrypts the embedded password into memory and
+    // compares it in the main thread; the anti-cheat's frequent background memcmp calls give
+    // us a timer. After enough post-Enter calls (the compare window), sweep all memory for the
+    // decrypted plaintext ONCE.
+    if PW_ENTER_SEEN.load(Ordering::Acquire) {
+        let c = POST_ENTER_CMP_COUNT.fetch_add(1, Ordering::Relaxed);
+        // Arm the PAGE_GUARD shortly after Enter, while the crackme is converting/copying the
+        // input into its heap compare buffer (not yet available when the ReadConsole hook ran,
+        // which blocked the crackme). A few attempts as the copy appears.
+        if GUARD_PAGE_BASE.load(Ordering::Acquire) == 0 && GUARD_HITS.load(Ordering::Acquire) == 0
+            && matches!(c, 1 | 2 | 4 | 8 | 16 | 40 | 100 | 200) {
+            arm_input_guard();
+        }
+        if c == 300 && !PW_WATCH_ARMED.swap(true, Ordering::AcqRel) {
+            spawn_string_scan();
+        }
+    }
     let do_cmp = |a: *const c_void, b: *const c_void, n: usize| -> i32 {
         match REAL_MEMCMP {
             Some(f) => f(a, b, n),
@@ -2695,6 +2784,22 @@ unsafe fn scan_strings_now(typed: &str, seconds: u64) {
                                     if binary_ctx && BINARY_HITS[0] == 0 {
                                         BINARY_HITS[0] = abs;
                                         log_msg(&format!("[scan3] BINARY needle at {:#x} ctx='{}'", abs, hex));
+                                        // Raw hex+ascii of the compare struct around the input
+                                        // buffer: the VM-decrypted password is often adjacent.
+                                        let ds = idx.saturating_sub(256);
+                                        let de = core::cmp::min(idx + 256, sl.len());
+                                        let mut row = ds;
+                                        while row < de {
+                                            let end = core::cmp::min(row + 16, de);
+                                            let mut hx = String::new();
+                                            let mut asc = String::new();
+                                            for &b in &sl[row..end] {
+                                                hx.push_str(&format!("{:02X} ", b));
+                                                asc.push(if (0x20..0x7f).contains(&b) { b as char } else { '.' });
+                                            }
+                                            log_msg(&format!("[dump] {:#x}  {:<48} {}", addr + off + row, hx, asc));
+                                            row = end;
+                                        }
                                     } else if binary_ctx && BINARY_HITS[1] == 0 && abs > BINARY_HITS[0] + 0x1000 {
                                         BINARY_HITS[1] = abs;
                                         log_msg(&format!("[scan3] BINARY needle2 at {:#x} ctx='{}'", abs, hex));
@@ -2717,7 +2822,7 @@ unsafe fn scan_strings_now(typed: &str, seconds: u64) {
                             }
                         } else {
                             let run_len = i - run_start;
-                            if (8..=64).contains(&run_len) && logged < 60000 && seen.len() < 800000 {
+                            if (6..=64).contains(&run_len) && logged < 60000 && seen.len() < 800000 {
                                 let raw = &sl[run_start..i];
                                 let alnum = raw.iter().filter(|&&c| c.is_ascii_alphanumeric()).count();
                                 if alnum * 10 >= run_len * 6 {
@@ -2800,6 +2905,23 @@ unsafe fn scan_strings_now(typed: &str, seconds: u64) {
                                         "C:\\Users\\semae\\Downloads\\dumped\\PASSWORD.txt",
                                         &field,
                                     );
+                                    // The marker is a fixed anchor; the real password for this
+                                    // build may sit at an offset from it, not contiguous. Dump
+                                    // raw hex+ascii from -128 to +512 bytes so we can see it.
+                                    let ds = i2.saturating_sub(128);
+                                    let de = core::cmp::min(i2 + 512, sl2.len());
+                                    let mut row = ds;
+                                    while row < de {
+                                        let end = core::cmp::min(row + 16, de);
+                                        let mut hx = String::new();
+                                        let mut asc = String::new();
+                                        for &b in &sl2[row..end] {
+                                            hx.push_str(&format!("{:02X} ", b));
+                                            asc.push(if (0x20..0x7f).contains(&b) { b as char } else { '.' });
+                                        }
+                                        log_msg(&format!("[mdump] {:#x}  {:<48} {}", addr2 + off2 + row, hx, asc));
+                                        row = end;
+                                    }
                                 }
                                 break;
                             }
@@ -3010,6 +3132,241 @@ unsafe extern "system" fn hook_message_box_a(hwnd: *mut c_void, text: *const u8,
 type FnGetClipboardData = unsafe extern "system" fn(u32) -> usize;
 static mut REAL_GET_CLIPBOARD_DATA: Option<FnGetClipboardData> = None;
 
+// WriteConsoleW/A: capture every string the target prints — including
+// VMProtect-decrypted ones like "Wrong password." / success banners. The
+// return address names the code site right after the write, letting us trace
+// the branch that produced it.
+type FnWriteConsoleW = unsafe extern "system" fn(*mut c_void, *const u16, u32, *mut u32, *mut c_void) -> i32;
+static mut REAL_WRITE_CONSOLE_W: Option<FnWriteConsoleW> = None;
+unsafe extern "system" fn hook_write_console_w(h: *mut c_void, buf: *const u16, n: u32, written: *mut u32, resv: *mut c_void) -> i32 {
+    let _active = HookCallGuard::enter();
+    let mut s = String::new();
+    if !buf.is_null() {
+        let take = core::cmp::min(n as usize, 512);
+        for i in 0..take {
+            let c = core::ptr::read(buf.add(i));
+            if c == 0 { break; }
+            if c < 0x80 { s.push(c as u8 as char); } else { s.push('?'); }
+        }
+    }
+    let ret = unsafe {
+        let rsp = _addr_of_caller_rsp();
+        if rsp != 0 { *(rsp as *const usize) } else { 0 }
+    };
+    log_msg(&format!("[console] WriteConsoleW ret={:#x} n={} text={:?}", ret, n, s));
+    match REAL_WRITE_CONSOLE_W {
+        Some(f) => f(h, buf, n, written, resv),
+        None => 0,
+    }
+}
+
+type FnWriteConsoleA = unsafe extern "system" fn(*mut c_void, *const u8, u32, *mut u32, *mut c_void) -> i32;
+static mut REAL_WRITE_CONSOLE_A: Option<FnWriteConsoleA> = None;
+unsafe extern "system" fn hook_write_console_a(h: *mut c_void, buf: *const u8, n: u32, written: *mut u32, resv: *mut c_void) -> i32 {
+    let _active = HookCallGuard::enter();
+    let mut s = String::new();
+    if !buf.is_null() {
+        let take = core::cmp::min(n as usize, 512);
+        for i in 0..take {
+            let c = core::ptr::read(buf.add(i));
+            if c == 0 { break; }
+            if (0x20..0x7f).contains(&c) || c == b'\n' || c == b'\r' { s.push(c as char); } else { s.push('.'); }
+        }
+    }
+    let ret = unsafe {
+        let rsp = _addr_of_caller_rsp();
+        if rsp != 0 { *(rsp as *const usize) } else { 0 }
+    };
+    log_msg(&format!("[console] WriteConsoleA ret={:#x} n={} text={:?}", ret, n, s));
+    match REAL_WRITE_CONSOLE_A {
+        Some(f) => f(h, buf, n, written, resv),
+    None => 0,
+    }
+}
+
+// ReadConsoleW/A: this CrackMe is a console app — the password is typed at the
+// "Enter the password:" prompt and read through ReadConsole, NOT via GUI WM_CHAR
+// messages (so the GetMessageW/IsDialogMessage capture never fires). Capture the
+// typed input here as the scan needle, then kick off the full-memory string scan
+// shortly after (on a background thread) so the VM has decrypted the embedded
+// password into memory by the time we sweep it.
+// Set once the console password line is complete (Enter seen). The embedded
+// password is compared inside the VM (no hooked strcmp/memcmp), so we cannot catch
+// the compare directly — instead we scan all of memory for the VM-decrypted plaintext
+// at the last safe moment (ExitProcess), when the buffer is usually still resident.
+static PW_ENTER_SEEN: AtomicBool = AtomicBool::new(false);
+static POST_ENTER_CMP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+// PAGE_GUARD trace of the password compare. On Enter we locate our typed input in a
+// private heap/VM buffer and set PAGE_GUARD on its page. When the VM reads that page to
+// compare it against the embedded password, a guard-page exception fires in veh_handler;
+// if the faulting RIP is in private executable memory (the VM code pool) we dump the
+// registers and the memory they point at — the decrypted password is one of them.
+static GUARD_PAGE_BASE: AtomicUsize = AtomicUsize::new(0);
+static GUARD_HITS: AtomicUsize = AtomicUsize::new(0);
+static GUARD_CAPTURES: AtomicUsize = AtomicUsize::new(0);
+static GUARD_REARM: AtomicBool = AtomicBool::new(false);
+// Destination buffer ReadConsoleW/A wrote the typed characters into (the crackme's own
+// line buffer). Recorded on the first char so we can guard it directly on Enter.
+static GUARD_LINE_BUF: AtomicUsize = AtomicUsize::new(0);
+
+unsafe fn guard_page(page: usize, protbyte: u32, why: &str) -> bool {
+    let mut old = 0u32;
+    let p = if matches!(protbyte, 0x04 | 0x40 | 0x02 | 0x20 | 0x80) { protbyte } else { 0x04 };
+    if VirtualProtect(page as *mut c_void, 0x1000, p | 0x100, &mut old) != 0 {
+        GUARD_PAGE_BASE.store(page, Ordering::Release);
+        log_msg(&format!("[guard] armed PAGE_GUARD on {} page {:#x} (prot {:#x})", why, page, p));
+        true
+    } else {
+        false
+    }
+}
+
+unsafe fn arm_input_guard() {
+    if GUARD_PAGE_BASE.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    let needle = typed_string();
+    let nb = needle.as_bytes();
+    if nb.len() < 4 {
+        return;
+    }
+    // ASCII and UTF-16LE forms (ReadConsoleW fills a wide buffer; the ASCII copy appears later).
+    let mut wide: Vec<u8> = Vec::with_capacity(nb.len() * 2);
+    for &b in nb { wide.push(b); wide.push(0); }
+
+    // 1) Directly guard the buffer ReadConsoleW wrote into, if it is a heap/VM address
+    // (skip stack buffers < 16 MB — guarding the stack would fault on every push/pop).
+    let lb = GUARD_LINE_BUF.load(Ordering::Acquire);
+    if lb > 0x0100_0000 {
+        let mut q = [0u8; 56];
+        if VirtualQuery(lb as *const c_void, q.as_mut_ptr(), 56) != 0
+            && u32::from_ne_bytes(q[32..36].try_into().unwrap()) == 0x1000 {
+            let prot = u32::from_ne_bytes(q[36..40].try_into().unwrap()) & 0xFF;
+            log_msg(&format!("[guard] ReadConsole line buffer at {:#x}", lb));
+            if guard_page(lb & !0xFFFusize, prot, "line-buffer") {
+                return;
+            }
+        }
+    }
+
+    // 2) Fallback: scan low private committed regions (skip the stack) for ASCII or UTF-16.
+    // Capped at 4 GiB and 500 ms so the memcmp-poll callers stay cheap (the compare copy has
+    // been seen at ~0x3262000 = 52 MiB).
+    let mut addr: usize = 0x0100_0000;
+    let mut info = [0u8; 56];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    while addr < 0x7FFE_FFFF_FFFF && std::time::Instant::now() < deadline {
+        if VirtualQuery(addr as *const c_void, info.as_mut_ptr(), info.len()) == 0 {
+            break;
+        }
+        let rsize = usize::from_ne_bytes(info[24..32].try_into().unwrap());
+        if rsize == 0 { break; }
+        let state = u32::from_ne_bytes(info[32..36].try_into().unwrap());
+        let protect = u32::from_ne_bytes(info[36..40].try_into().unwrap());
+        let mtype = u32::from_ne_bytes(info[40..44].try_into().unwrap());
+        let next = addr.saturating_add(rsize).max(addr + 0x1000);
+        if state == 0x1000 && mtype == 0x20000 && matches!(protect & 0xFF, 0x04 | 0x40) {
+            let mut off = 0usize;
+            while off < rsize {
+                let chunk = core::cmp::min(0x100000usize, rsize - off);
+                let mut buf = vec![0u8; chunk];
+                let mut got = 0usize;
+                if ReadProcessMemory(GetCurrentProcess(), (addr + off) as *const c_void,
+                    buf.as_mut_ptr() as *mut c_void, chunk, &mut got) != 0 && got >= nb.len() {
+                    let sl = &buf[..got];
+                    let mut i = 0usize;
+                    while i + nb.len() <= sl.len() {
+                        let hit_ascii = &sl[i..i + nb.len()] == nb;
+                        let hit_wide = i + wide.len() <= sl.len() && &sl[i..i + wide.len()] == wide.as_slice();
+                        if hit_ascii || hit_wide {
+                            let hit = addr + off + i;
+                            if guard_page(hit & !0xFFFusize, protect & 0xFF,
+                                if hit_wide { "input-copy(utf16)" } else { "input-copy(ascii)" }) {
+                                log_msg(&format!("[guard]   (input found at {:#x})", hit));
+                                return;
+                            }
+                        }
+                        i += 1;
+                    }
+                }
+                off += chunk;
+            }
+        }
+        addr = next;
+    }
+    log_msg("[guard] input copy not found in private memory — guard not armed");
+}
+
+type FnReadConsoleW = unsafe extern "system" fn(*mut c_void, *mut u16, u32, *mut u32, *mut c_void) -> i32;
+static mut REAL_READ_CONSOLE_W: Option<FnReadConsoleW> = None;
+unsafe extern "system" fn hook_read_console_w(h: *mut c_void, buf: *mut u16, n: u32, read: *mut u32, ctl: *mut c_void) -> i32 {
+    let _active = HookCallGuard::enter();
+    let ret = match REAL_READ_CONSOLE_W { Some(f) => f(h, buf, n, read, ctl), None => 0 };
+    if ret != 0 && !buf.is_null() && !read.is_null() {
+        let _ = GUARD_LINE_BUF.compare_exchange(0, buf as usize, Ordering::AcqRel, Ordering::Relaxed);
+        let cnt = core::cmp::min(*read as usize, 63);
+        for i in 0..cnt {
+            let c = core::ptr::read(buf.add(i));
+            if c == 0x0D || c == 0x0A {
+                PW_ENTER_SEEN.store(true, Ordering::Release);
+                log_msg(&format!("[console] ReadConsoleW ENTER typed='{}'", typed_string()));
+                // Guard is armed slightly later from the memcmp poll, once the crackme has
+                // copied the input into its heap compare buffer (it is still blocked here).
+            } else if (0x20..0x7f).contains(&c) {
+                note_typed_char(c as u8);
+            }
+        }
+    }
+    ret
+}
+
+type FnReadConsoleA = unsafe extern "system" fn(*mut c_void, *mut u8, u32, *mut u32, *mut c_void) -> i32;
+static mut REAL_READ_CONSOLE_A: Option<FnReadConsoleA> = None;
+unsafe extern "system" fn hook_read_console_a(h: *mut c_void, buf: *mut u8, n: u32, read: *mut u32, ctl: *mut c_void) -> i32 {
+    let _active = HookCallGuard::enter();
+    let ret = match REAL_READ_CONSOLE_A { Some(f) => f(h, buf, n, read, ctl), None => 0 };
+    if ret != 0 && !buf.is_null() && !read.is_null() {
+        let cnt = core::cmp::min(*read as usize, 63);
+        for i in 0..cnt {
+            let c = core::ptr::read(buf.add(i));
+            if c == 0x0D || c == 0x0A {
+                PW_ENTER_SEEN.store(true, Ordering::Release);
+                log_msg(&format!("[console] ReadConsoleA ENTER typed='{}'", typed_string()));
+            } else if (0x20..0x7f).contains(&c) {
+                note_typed_char(c);
+            }
+        }
+    }
+    ret
+}
+
+// ExitProcess / RtlExitUserProcess: last safe point to dump memory. The wrong-password
+// path exits almost immediately after the VM compare, too fast for a delayed thread
+// (which the anti-cheat also kills), so we scan synchronously here, then exit for real.
+type FnExitProcess = unsafe extern "system" fn(u32) -> !;
+static mut REAL_EXIT_PROCESS: Option<FnExitProcess> = None;
+unsafe extern "system" fn hook_exit_process(code: u32) -> ! {
+    if PW_ENTER_SEEN.load(Ordering::Acquire) && !PW_WATCH_ARMED.swap(true, Ordering::AcqRel) {
+        log_msg(&format!("[exit] ExitProcess({:#x}) — scanning memory for decrypted password before exit", code));
+        spawn_string_scan();
+    }
+    match REAL_EXIT_PROCESS {
+        Some(f) => f(code),
+        None => {
+            core::arch::asm!("int3");
+            loop {}
+        }
+    }
+}
+
+#[inline(always)]
+unsafe fn _addr_of_caller_rsp() -> usize {
+    let p: usize;
+    core::arch::asm!("mov {}, rsp", out(reg) p, options(nostack, preserves_flags));
+    p
+}
+
 unsafe extern "system" fn hook_get_clipboard_data(fmt: u32) -> usize {
     let r = match REAL_GET_CLIPBOARD_DATA {
         Some(f) => f(fmt),
@@ -3051,6 +3408,56 @@ unsafe extern "system" fn hook_get_clipboard_data(fmt: u32) -> usize {
         let n = core::cmp::min(bytes.len(), 64);
         core::ptr::copy_nonoverlapping(bytes.as_ptr(), TYPED_CHARS.as_mut_ptr(), n);
         TYPED_LEN = n;
+        // NOTE: DR0/DR1 arming tripped Code 70, disabled. Instead, dump the
+        // page around the clipboard buffer and extract printable runs — the
+        // VM decrypts the embedded password into memory and often places it
+        // right next to the input buffer. ONE SHOT per run.
+        if !PW_WATCH_ARMED.swap(true, Ordering::AcqRel) {
+            let base = r & !0xFFFusize;
+            const WIN: usize = 0x4000; // 16 KiB window
+            let mut dumpbuf: Vec<u8> = Vec::with_capacity(WIN);
+            dumpbuf.resize(WIN, 0);
+            let mut got = 0usize;
+            if ReadProcessMemory(
+                GetCurrentProcess(),
+                base as *const c_void,
+                dumpbuf.as_mut_ptr() as *mut c_void,
+                WIN,
+                &mut got,
+            ) != 0 && got > 0 {
+                log_msg(&format!("[clip-scan] base={:#x} got={:#x} — printable runs >=8:", base, got));
+                let mut i = 0usize;
+                while i < got {
+                    let mut j = i;
+                    while j < got && (0x20..0x7f).contains(&dumpbuf[j]) { j += 1; }
+                    if j - i >= 8 {
+                        let s: String = dumpbuf[i..j].iter().map(|&c| c as char).collect();
+                        log_msg(&format!("[clip-scan] +{:#x} ({:>3}): '{}'", i, j - i, s));
+                    }
+                    i = j.max(i + 1);
+                }
+                // also sweep for UTF-16LE runs
+                let mut i = 0usize;
+                while i + 16 <= got {
+                    let mut j = i;
+                    let mut printable = 0usize;
+                    while j + 1 < got
+                        && dumpbuf[j + 1] == 0
+                        && (0x20..0x7f).contains(&dumpbuf[j])
+                    {
+                        j += 2;
+                        printable += 1;
+                    }
+                    if printable >= 6 {
+                        let mut s = String::new();
+                        let mut k = i;
+                        while k < j { s.push(dumpbuf[k] as char); k += 2; }
+                        log_msg(&format!("[clip-scan-u16] +{:#x} ({:>3}): '{}'", i, printable, s));
+                    }
+                    i = j.max(i + 2);
+                }
+            }
+        }
     }
     r
 }
@@ -3212,6 +3619,62 @@ unsafe fn install_message_and_box_hooks() {
     if let Some(t) = hook_export_at(user32, b"PeekMessageA\0", hook_peek_message_w as *const ()) {
         REAL_PEEK_MESSAGE_A = Some(core::mem::transmute(t));
         log_msg("[hook] PeekMessageA hooked");
+    }
+    // Console writes (so we see "Wrong password." / success banners the VM prints).
+    log_msg("[hook] -- WriteConsole install starting --");
+    let k32 = GetModuleHandleA(b"kernel32.dll\0".as_ptr());
+    log_msg(&format!("[hook] k32 handle = {:p}", k32));
+    if !k32.is_null() {
+        let wcw = GetProcAddress(k32, b"WriteConsoleW\0".as_ptr());
+        log_msg(&format!("[hook] k32!WriteConsoleW = {:p}", wcw));
+        match hook_export_at(k32, b"WriteConsoleW\0", hook_write_console_w as *const ()) {
+            Some(t) => { REAL_WRITE_CONSOLE_W = Some(core::mem::transmute(t));
+                         log_msg("[hook] WriteConsoleW (k32) HOOKED OK"); }
+            None => log_msg("[hook] WriteConsoleW (k32) HOOK FAILED -> None"),
+        }
+        match hook_export_at(k32, b"WriteConsoleA\0", hook_write_console_a as *const ()) {
+            Some(t) => { REAL_WRITE_CONSOLE_A = Some(core::mem::transmute(t));
+                         log_msg("[hook] WriteConsoleA (k32) HOOKED OK"); }
+            None => log_msg("[hook] WriteConsoleA (k32) HOOK FAILED -> None"),
+        }
+        match hook_export_at(k32, b"ReadConsoleW\0", hook_read_console_w as *const ()) {
+            Some(t) => { REAL_READ_CONSOLE_W = Some(core::mem::transmute(t));
+                         log_msg("[hook] ReadConsoleW (k32) HOOKED OK"); }
+            None => log_msg("[hook] ReadConsoleW (k32) HOOK FAILED -> None"),
+        }
+        match hook_export_at(k32, b"ReadConsoleA\0", hook_read_console_a as *const ()) {
+            Some(t) => { REAL_READ_CONSOLE_A = Some(core::mem::transmute(t));
+                         log_msg("[hook] ReadConsoleA (k32) HOOKED OK"); }
+            None => log_msg("[hook] ReadConsoleA (k32) HOOK FAILED -> None"),
+        }
+        match hook_export_at(k32, b"ExitProcess\0", hook_exit_process as *const ()) {
+            Some(t) => { REAL_EXIT_PROCESS = Some(core::mem::transmute(t));
+                         log_msg("[hook] ExitProcess (k32) HOOKED OK"); }
+            None => log_msg("[hook] ExitProcess (k32) HOOK FAILED -> None"),
+        }
+    }
+    let kbase = GetModuleHandleA(b"kernelbase.dll\0".as_ptr());
+    log_msg(&format!("[hook] kbase handle = {:p}", kbase));
+    if !kbase.is_null() {
+        let wcw2 = GetProcAddress(kbase, b"WriteConsoleW\0".as_ptr());
+        log_msg(&format!("[hook] kbase!WriteConsoleW = {:p}", wcw2));
+        match hook_export_at(kbase, b"WriteConsoleW\0", hook_write_console_w as *const ()) {
+            Some(t) => { if REAL_WRITE_CONSOLE_W.is_none() { REAL_WRITE_CONSOLE_W = Some(core::mem::transmute(t)); }
+                         log_msg("[hook] WriteConsoleW (kbase) HOOKED OK"); }
+            None => log_msg("[hook] WriteConsoleW (kbase) HOOK FAILED -> None"),
+        }
+        if REAL_READ_CONSOLE_W.is_none() {
+            if let Some(t) = hook_export_at(kbase, b"ReadConsoleW\0", hook_read_console_w as *const ()) {
+                REAL_READ_CONSOLE_W = Some(core::mem::transmute(t));
+                log_msg("[hook] ReadConsoleW (kbase) HOOKED OK");
+            }
+        }
+        if REAL_READ_CONSOLE_A.is_none() {
+            if let Some(t) = hook_export_at(kbase, b"ReadConsoleA\0", hook_read_console_a as *const ()) {
+                REAL_READ_CONSOLE_A = Some(core::mem::transmute(t));
+                log_msg("[hook] ReadConsoleA (kbase) HOOKED OK");
+            }
+        }
     }
     log_msg("[hook] message/messagebox hooks installed");
 }

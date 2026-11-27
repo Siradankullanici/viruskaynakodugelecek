@@ -317,7 +317,9 @@ fn main() {
     let target_keyword = if args.len() > 1 {
         args[1].to_lowercase()
     } else {
-        "testcrackme".to_string()
+        // Default matches the whole CrackMe family: "testcrackme.exe",
+        // "crackme (2).exe", "crackme2.code75fix.exe", ... (substring match below).
+        "crackme".to_string()
     };
 
     let dll_path: PathBuf = {
@@ -372,8 +374,9 @@ fn main() {
 
                         let pid = pe.th32_process_id;
                         let lname = name.to_lowercase();
-        let is_exact = lname == target_keyword
-            || lname.ends_with(".exe") && lname[..lname.len() - 4].ends_with(&target_keyword);
+        // Substring match so any CrackMe-family name is caught regardless of
+        // suffix/spacing ("crackme (2).exe", "crackme2.code75fix.exe", ...).
+        let is_exact = lname.contains(&target_keyword);
         if is_exact && !injected_pids.contains(&pid) {
                             println!("\n[+] HEDEF SÜREÇ TESPİT EDİLDİ! Adı: '{}' | PID: {}", name, pid);
 
